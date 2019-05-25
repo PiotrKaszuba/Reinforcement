@@ -37,7 +37,7 @@ class Memory:
         return self._memory
 
     def array_memory(self):
-        return np.array(self._memory)
+        return np.array(self._memory)[:self._length]
 
     def get_nth_newest(self, n=0):
         return self._memory[n]
