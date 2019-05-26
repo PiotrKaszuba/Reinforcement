@@ -3,6 +3,7 @@
 import numpy as np
 import random
 import tqdm
+import os
 from misio.util import generate_deterministic_seeds
 
 
@@ -57,23 +58,34 @@ if __name__ == "__main__":
         seeds = generate_deterministic_seeds(args.seed, args.num_games)
     else:
         seeds = None
+    layouts = []
+    for root, dirnames, filenames in os.walk('pacman_layouts/'):
+        for filename in filenames:
+            if filename.endswith('lay'):
+                layouts.append(os.path.join(root, filename))
     # Choose a Pacman agent
-    AgentClass = load_agent(args.agent)
-    agent = AgentClass()
+    import Pacman.PacmanAgent2 as pa
+    #AgentClass = load_agent(args.agent)
+    agent = pa.getAgent()
     from misio.pacman.pacman import LocalPacmanGameRunner
-
-    runner = LocalPacmanGameRunner(layout_dir=args.layout,
-                                   random_ghosts=args.random_ghosts,
-                                   show_window=not args.no_graphics,
-                                   zoom_window=args.zoom,
-                                   frame_time=args.frame_time)
-
+    print(layouts)
     games = []
-    for i in tqdm.trange(args.num_games, leave=False):
+    for i in range(args.num_games):
         if seeds is not None:
             random.seed(seeds[i])
+        if i%4==0:
+
+            runner = LocalPacmanGameRunner(layout_dir=np.random.choice(layouts),
+                                           random_ghosts=args.random_ghosts,
+                                           show_window=not args.no_graphics,
+                                           zoom_window=args.zoom,
+                                           frame_time=args.frame_time)
         game = runner.run_game(agent)
         games.append(game)
+
+
+
+    #for i in tqdm.trange(args.num_games, leave=False):
     scores = [game.state.getScore() for game in games]
     results = np.array([game.state.isWin() for game in games])
     print("Avg score:     {:0.2f}".format(np.mean(scores)))
