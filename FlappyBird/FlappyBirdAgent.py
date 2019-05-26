@@ -61,7 +61,7 @@ for game in ['FlappyBird']:
 
 X = Discrete_DQN_Agent(env=make('FlappyBird-v1'), model_function=model_function, save_dir='../weights/FlappyBird/',
                        max_epos=100000, action_size=2,
-                       state_size=100, second_size=50, dim=2,
+                       state_shape=(100,50),
                        frames_input=4, lr=1e-5,
                        model_name='NoPooling', load_weights=True, epos_snap=450,
                        meta_data_types_to_save=get_meta_data_types_to_save(),

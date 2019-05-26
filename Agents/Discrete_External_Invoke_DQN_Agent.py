@@ -4,7 +4,7 @@ from pprint import pprint
 
 import cv2
 import numpy as np
-import pygame
+from misio.pacman.learningAgents import ReinforcementAgent
 
 
 import LearnUtil.Visualize_Activations as va
@@ -16,7 +16,7 @@ from LearnUtil.Model_Saving import Model_Saving
 class Discrete_External_Invoke_DQN_Agent(ReinforcementAgent):
 
     def __init__(self, model_function, save_dir, max_epos, action_size,  # action size - how many possible actions
-                 state_size, second_size=None, dim=1,  # input sizes (if dim==2 then second size used) example: 2d image
+                 state_shape,  #input sizes
                  frames_input=1, lr=0.0001, batch_size=50,  # learning params-frames(how many past frames model sees)
                  model_name=None, load_weights=False, epos_snap=750,  # for saving/loading purposes
                  meta_data_types_to_save=None, meta_data_types_functions=None, epos_data_types_to_save=None,
@@ -24,24 +24,25 @@ class Discrete_External_Invoke_DQN_Agent(ReinforcementAgent):
                  action_idle=0, action_idle_multiply=1,  # random exploration modificators
                  epos_explore_jump=150, explore_jump=0.55, expl_rate=1, expl_decay=0.999, expl_min=0.05,
                  memory=5000, save_memory_length=None,  # memory-learning memory size, save-memory chunk size
-                 ddqn=False, epos_equalize_models=None, discount=0.95, init_reward=5,  # dqn parameters
+                 ddqn=False, ddqn_cross_learn=False, epos_equalize_models=None, discount=0.95, init_reward=5,  # dqn parameters
                  past_epos=0,  # how long model was trained already
                  preprocess_state_func=lambda x: x, preprocess_input_func=lambda x: x,
-                 start_train_long_memory_batch_mult=50,
+                 start_train_long_memory_batch_mult=50, replays_per_episode=1,
                  operation_memory=2, input_order=1,  # one frame processing memory (might use frames before)
-                 sample_fail=True, sample_fail_base_chance=1.5e-7,  # in replay epos scaling chance to see fail
-                 analyzeStateFunc = lambda x:(x[0],x[1]), actionTranslator = lambda x, y: x
+                 guided_sample=None, guided_sample_base_chance=1.5e-7,  # in replay epos scaling chance to see specific reward
+                 analyzeStateFunc = lambda x:(x[0],x[1],x[2]), actionTranslator = lambda x, y: x, normalizeReward = lambda x:x
                  #state analyzer return observation/done
                  # and actionTranslator is two way model symbol/env symbol action with param True if translate to model
                  ):
-
+        ReinforcementAgent.__init__(self, numTraining=max_epos, epsilon=0.0, gamma=discount, alpha=lr)
         self._past_epos = past_epos
         self._frames_input = frames_input
-        self._state_size = state_size
-        self._second_size = second_size  # Second size must be used when dim is >1
+        self._state_shape = state_shape
         self._action_size = action_size
         self._ddqn = ddqn  # if ddqn is true then Double q learning is used
+        self._ddqn_cross_learn= ddqn_cross_learn
         self._epos_equalize_models = epos_equalize_models  # every n epos set weights of target model to model
+        self._input_utils = InputUtils(frames_input, state_shape)
         self._model_build(load_weights, save_dir, epos_snap, model_name, meta_data_types_to_save,
                           meta_data_types_functions,
                           epos_data_types_to_save, model_function, lr)
@@ -53,7 +54,7 @@ class Discrete_External_Invoke_DQN_Agent(ReinforcementAgent):
         else:
             self._saving_memory = None
 
-        self._input_utils = InputUtils(dim, frames_input, state_size, second_size)
+
         self._max_epos = max_epos
 
         self._batch_size = batch_size
@@ -86,11 +87,16 @@ class Discrete_External_Invoke_DQN_Agent(ReinforcementAgent):
         self._time = time.time()
         self._input_order = input_order
         self._ms.epos_data_types_to_reset.append('reward')
-        self._sample_fail = sample_fail
-        self._memory.chance_factor = sample_fail_base_chance
+        self._guided_sample = guided_sample
+        self._memory.chance_factor = guided_sample_base_chance
         self.analyzeStateFunc = analyzeStateFunc
         self.actionTranslator = actionTranslator
-        self.i_episode = 0
+        self.normalizeReward = normalizeReward
+        self.replaysPerEpisode = replays_per_episode
+        self.i_episode = past_epos
+        if self._visualize_layer is not None:
+            cv2.namedWindow('show', cv2.WINDOW_NORMAL)
+            cv2.resizeWindow('show', 1000, 1000)
 
     def _model_build(self, load_weights, save_dir, epos_snap, model_name, meta_data_types_to_save,
                      meta_data_types_functions, epos_data_types_to_save, model_function, learning_rate):
@@ -102,7 +108,7 @@ class Discrete_External_Invoke_DQN_Agent(ReinforcementAgent):
             print("Loaded values!")
         else:
 
-            self._model = model_function(input_shape=(self._frames_input, self._state_size, self._second_size),
+            self._model = model_function(input_shape=(self._input_utils.get_input_shape()),
                                          action_size=self._action_size, data_format='channels_first',
                                          learning_rate=learning_rate)
             self._ms = Model_Saving(self._model, save_dir, epos_snap, model_name, meta_data_types_to_save,
@@ -160,11 +166,11 @@ class Discrete_External_Invoke_DQN_Agent(ReinforcementAgent):
         batch = self._memory.random_sample(self._batch_size)
 
         # exchange first sample with one latest fail with probability scalling up with time and batch_size
-        if self._sample_fail:
+        if self._guided_sample is not None:
             batch = self._memory.replace_first_with_specified_value_by_chance(batch,
                                                                               self._memory.episode_batch_size_chance(
                                                                                   i_episode, self._batch_size),
-                                                                              'reward', -self._init_rew)
+                                                                              'reward', self._guided_sample)
         return batch
 
     def _replay(self, i_episode):
@@ -176,12 +182,12 @@ class Discrete_External_Invoke_DQN_Agent(ReinforcementAgent):
             batch = self._get_batch(i_episode)
             self._build_expected_rewards_and_fit_q_network(batch, q_network=self._model,
                                                            target_network=self._target_model)
-            if self._ddqn:
+            if self._ddqn and self._ddqn_cross_learn:
                 batch_target = self._get_batch(i_episode)
                 self._build_expected_rewards_and_fit_q_network(batch_target, q_network=self._target_model,
                                                                target_network=self._model)
 
-    def _decide_action(self, times):
+    def _decide_action(self, times, legalActions=None):
         model_input = self._input_utils.reshape_input(self._short_memory.array_memory()[::self._input_order])
         prediction = self._model.predict(model_input)[0]
 
@@ -193,27 +199,41 @@ class Discrete_External_Invoke_DQN_Agent(ReinforcementAgent):
 
         # if not control then random
         if np.random.rand() < self._exploration_rate:
-            action = np.random.randint(self._action_size + self._action_idle_multiply - 1)
-            if action >= self._action_size - 1:
-                return self._action_idle
+            if legalActions is not None:
+                actions = ([self._action_idle]*(self._action_idle_multiply-1) if self._action_idle in legalActions else []) + legalActions
             else:
-                return action
+                actions = [self._action_idle] * (
+                            self._action_idle_multiply - 1)  + list(range(self._action_size))
+
+
+            return np.random.choice(actions)
 
         # if not random then decide
-        return np.argmax(prediction)
+        chosen = np.argmax(prediction)
+        if legalActions is not None:
+            while(chosen not in legalActions):
+                prediction[chosen] = np.min(prediction)-1
+                chosen = np.argmax(prediction)
+
+        return chosen
 
     def _visualizeInput(self, model_input):
         acts = va.get_activations(self._model, model_input,
                                   layer_name=self._visualize_layer)
         va.show_activations(acts, timeout=self._visualize_timeout)
-        vis = np.concatenate((model_input[0][0], model_input[0][1]))#, model_input[0][2], model_input[0][3]))
+        #vis = np.concatenate((model_input[0][0], model_input[0][1]))#, model_input[0][2], model_input[0][3]))
+        vis = model_input[0,0,:,:,1:4]
+        #print(model_input[0][0][0])
+        cv2.namedWindow('win', cv2.WINDOW_NORMAL)
+        cv2.resizeWindow('win', 400, 400)
         cv2.imshow('win', vis)
         cv2.waitKey(self._visualize_timeout)
 
     def _visualizeComponents(self):
-        cv2.imshow('pr', cv2.resize(self._operation_memory.get_nth_newest(1), (0, 0), fx=4, fy=4))
-        cv2.imshow('ob', cv2.resize(self._operation_memory.get_nth_newest(0), (0, 0), fx=4, fy=4))
-        cv2.imshow('inp', cv2.resize(self._short_memory.get_nth_newest(), (0, 0), fx=4, fy=4))
+        cv2.imshow('pr', cv2.resize(self._operation_memory.get_nth_newest(1)[2:], (0, 0), fx=4, fy=4))
+
+        cv2.imshow('ob', cv2.resize(self._operation_memory.get_nth_newest(0)[1:], (0, 0), fx=4, fy=4))
+        cv2.imshow('inp', cv2.resize(self._short_memory.get_nth_newest()[:,:,1:], (0, 0), fx=4, fy=4))
         cv2.waitKey(self._visualize_timeout)
 
     def _fill_memory(self, observation, memory):
@@ -244,7 +264,7 @@ class Discrete_External_Invoke_DQN_Agent(ReinforcementAgent):
             self._saving_memory.remember(state, action, reward, new_state, done, i_episode)
 
     def getAction(self, state):
-        observation, done = self.analyzeStateFunc(state)
+        observation, done, legalActions = self.analyzeStateFunc(state)
         if self._operation_memory.memory_length() == 0:
             self.i_episode += 1
             self._ms.epos_snapshot(self.i_episode)
@@ -252,13 +272,14 @@ class Discrete_External_Invoke_DQN_Agent(ReinforcementAgent):
                 self._target_ms.epos_snapshot(self.i_episode)
             self._prepare_run(observation)
 
-        action = self.actionTranslator(self._decide_action(self._times), False)
+        action = self.actionTranslator(self._decide_action(self._times), False, legalActions)
+
 
         self.doAction(state,action)
         return action
     def update(self, state, action, nextState, reward):
-
-        observation, done = self.analyzeStateFunc(nextState)
+        reward = self.normalizeReward(reward)
+        observation, done, legalActions = self.analyzeStateFunc(nextState)
         action = self.actionTranslator(action, True)
         self._preprocess_and_store(observation, self._preprocess_state_func,
                                    self._operation_memory)
@@ -271,6 +292,8 @@ class Discrete_External_Invoke_DQN_Agent(ReinforcementAgent):
 
         self._total_rew += reward
         self._times += 1
+        if self._times%500==0:
+            print("still playing")
 
 
     def final(self, state):
@@ -281,8 +304,10 @@ class Discrete_External_Invoke_DQN_Agent(ReinforcementAgent):
             self._ms.collect_epos_data('QValues', self._currentRunQVals, self.i_episode)
 
         self._ms.collect_epos_data('reward', self._total_rew, self.i_episode)
-
-        self._replay(self.i_episode)  # train model
+    
+        
+        for i in range(self.replaysPerEpisode):
+            self._replay(self.i_episode)  # train model
         self._exploration_rate = max(self._exploration_rate * (self._exploration_decay ** self._times),
                                      self._exploration_min)  # update exploration rate
         if (self.i_episode + 1) % self._epos_explore_jump == 0:

@@ -16,7 +16,7 @@ from LearnUtil.Model_Saving import Model_Saving
 class Discrete_DQN_Agent:
 
     def __init__(self, env, model_function, save_dir, max_epos, action_size,  # action size - how many possible actions
-                 state_size, second_size=None, dim=1,  # input sizes (if dim==2 then second size used) example: 2d image
+                 state_shape, #input sizes
                  frames_input=1, lr=0.0001, batch_size=50,  # learning params-frames(how many past frames model sees)
                  model_name=None, load_weights=False, epos_snap=750,  # for saving/loading purposes
                  meta_data_types_to_save=None, meta_data_types_functions=None, epos_data_types_to_save=None,
@@ -35,8 +35,8 @@ class Discrete_DQN_Agent:
 
         self._past_epos = past_epos
         self._frames_input = frames_input
-        self._state_size = state_size
-        self._second_size = second_size  # Second size must be used when dim is >1
+        self._state_shape = state_shape
+
         self._action_size = action_size
         self._ddqn = ddqn  # if ddqn is true then Double q learning is used
         self._epos_equalize_models = epos_equalize_models  # every n epos set weights of target model to model
@@ -50,8 +50,7 @@ class Discrete_DQN_Agent:
             self._saving_memory = Memory(save_memory_length, save_and_reset=True, model_saving=self._ms)
         else:
             self._saving_memory = None
-
-        self._input_utils = InputUtils(dim, frames_input, state_size, second_size)
+        self._input_utils = InputUtils(frames_input,state_shape)
         self._max_epos = max_epos
 
         self._batch_size = batch_size
@@ -88,7 +87,9 @@ class Discrete_DQN_Agent:
         self._ms.epos_data_types_to_reset.append('reward')
         self._sample_fail = sample_fail
         self._memory.chance_factor = sample_fail_base_chance
-
+        #if self._visualize_layer is not None:
+           # cv2.namedWindow('show', cv2.WINDOW_NORMAL)
+            #cv2.resizeWindow('show', 1000, 1000)
 
     def _model_build(self, load_weights, save_dir, epos_snap, model_name, meta_data_types_to_save,
                      meta_data_types_functions, epos_data_types_to_save, model_function, learning_rate):
@@ -100,7 +101,7 @@ class Discrete_DQN_Agent:
             print("Loaded values!")
         else:
 
-            self._model = model_function(input_shape=(self._frames_input, self._state_size, self._second_size),
+            self._model = model_function(input_shape=(self._input_utils.get_input_shape()),
                                          action_size=self._action_size, data_format='channels_first',
                                          learning_rate=learning_rate)
             self._ms = Model_Saving(self._model, save_dir, epos_snap, model_name, meta_data_types_to_save,

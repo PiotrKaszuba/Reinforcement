@@ -71,10 +71,14 @@ def show_activations(activations, timeout=30, winnname='show'):
            for j in range(cols):
                if i*cols + j >= size:
                    break
-               tempImg = first[0, i*cols+j,:,:]
+               if len(first.shape)==5:
+                    tempImg = first[0, i*cols+j,:,:,0]
+               else:
+                   tempImg = first[0, i * cols + j, :, :]
                mat[i*(first.shape[2]+hSpace):i*(first.shape[2]+hSpace)+tempImg.shape[0], j*(first.shape[3]+wSpace):j*(first.shape[3]+wSpace)+ tempImg.shape[1]] = tempImg
 
         mat = cv2.resize(mat, (0, 0), fx=3, fy=3)
+       
         cv2.imshow(winnname, mat)
         cv2.waitKey(timeout)
 
